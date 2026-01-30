@@ -21,8 +21,8 @@
 #define ECHO_R 12
 
 // ---------- SETTINGS ----------
-#define SPEED     150
-#define WALL_DIST 20    // cm
+#define SPEED     180
+#define WALL_DIST 30    // cm
 #define US_SAMPLES 5    // median filter samples
 
 int distL, distR;
@@ -148,9 +148,9 @@ void loop() {
   // BOTH SIDES BLOCKED
   if (distL < WALL_DIST && distR < WALL_DIST) {
     stopMotors();
-    delay(100);
+    delay(50);
     turnRight();
-    delay(300);
+    delay(600);
   }
   // LEFT BLOCKED
   else if (distL < WALL_DIST) {
