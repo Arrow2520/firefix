@@ -1,34 +1,47 @@
 /* =====================================================
-   OBJECT AVOIDING ROBOT (MEDIAN FILTERED)
+   FIRE FIGHTING ROBOT
+   Object Avoidance + Flame Approach + Relay Fan
    Arduino UNO + L298N
-   2 × HC-SR04 (25° outward, front)
    ===================================================== */
 
-// ---------- L298N PINS ----------
-#define ENA 3    // Left motor speed (PWM)
+// ================== L298N ==================
+#define ENA 3
 #define IN1 5
 #define IN2 6
 
-#define ENB 10   // Right motor speed (PWM)
+#define ENB 10
 #define IN3 7
 #define IN4 8
 
-// ---------- ULTRASONIC PINS ----------
+// ================== ULTRASONIC ==================
 #define TRIG_L 9
-#define ECHO_L 10
+#define ECHO_L 2      // FIXED (no conflict)
 
 #define TRIG_R 11
 #define ECHO_R 12
 
-// ---------- SETTINGS ----------
-#define SPEED     180
-#define WALL_DIST 30    // cm
-#define US_SAMPLES 5    // median filter samples
+// ================== FLAME SENSORS ==================
+#define F1 A0
+#define F2 A1
+#define F3 A2   // center
+#define F4 A3
+#define F5 A4
+
+// ================== FAN (RELAY) ==================
+#define FAN_PIN 13    // relay input
+
+// ================== TUNING ==================
+#define SPEED            180
+#define WALL_DIST        40    // cm
+#define FLAME_NEAR_DIST  20    // cm
+#define FLAME_TH         600
+#define US_SAMPLES       5
 
 int distL, distR;
+int f1, f2, f3, f4, f5;
 
 // =====================================================
-// MOTOR FUNCTIONS
+// MOTOR CONTROL (L298N)
 // =====================================================
 void initMotors() {
   pinMode(ENA, OUTPUT);
@@ -76,94 +89,156 @@ void turnRight() {
 }
 
 // =====================================================
-// ULTRASONIC FUNCTIONS
+// ULTRASONIC (MEDIAN FILTER)
 // =====================================================
 void initUltrasonic() {
   pinMode(TRIG_L, OUTPUT);
   pinMode(ECHO_L, INPUT);
-
   pinMode(TRIG_R, OUTPUT);
   pinMode(ECHO_R, INPUT);
 }
 
-int readUltrasonicRaw(int trigPin, int echoPin) {
-  digitalWrite(trigPin, LOW);
+int readUltrasonicRaw(int trig, int echo) {
+  digitalWrite(trig, LOW);
   delayMicroseconds(2);
-  digitalWrite(trigPin, HIGH);
+  digitalWrite(trig, HIGH);
   delayMicroseconds(10);
-  digitalWrite(trigPin, LOW);
+  digitalWrite(trig, LOW);
 
-  long duration = pulseIn(echoPin, HIGH, 30000);
-  if (duration == 0) return 999;   // no echo
-
-  return duration * 0.034 / 2;
+  long d = pulseIn(echo, HIGH, 30000);
+  if (d == 0) return 999;
+  return d * 0.034 / 2;
 }
 
-// ---------- MEDIAN FILTER ----------
-int getMedian(int *arr, int n) {
-  for (int i = 0; i < n - 1; i++) {
-    for (int j = i + 1; j < n; j++) {
-      if (arr[j] < arr[i]) {
-        int t = arr[i];
-        arr[i] = arr[j];
-        arr[j] = t;
+int median(int *a, int n) {
+  for (int i = 0; i < n - 1; i++)
+    for (int j = i + 1; j < n; j++)
+      if (a[j] < a[i]) {
+        int t = a[i]; a[i] = a[j]; a[j] = t;
       }
-    }
-  }
-  return arr[n / 2];
+  return a[n / 2];
 }
 
-int readUltrasonicMedian(int trigPin, int echoPin) {
-  int samples[US_SAMPLES];
-
+int readUltrasonicMedian(int trig, int echo) {
+  int s[US_SAMPLES];
   for (int i = 0; i < US_SAMPLES; i++) {
-    samples[i] = readUltrasonicRaw(trigPin, echoPin);
+    s[i] = readUltrasonicRaw(trig, echo);
     delay(5);
   }
-
-  return getMedian(samples, US_SAMPLES);
+  return median(s, US_SAMPLES);
 }
+
+// =====================================================
+// FLAME
+// =====================================================
+void readFlame() {
+  f1 = analogRead(F1);
+  f2 = analogRead(F2);
+  f3 = analogRead(F3);
+  f4 = analogRead(F4);
+  f5 = analogRead(F5);
+}
+
+bool flameDetected() {
+  return (f1 < FLAME_TH || f2 < FLAME_TH || f3 < FLAME_TH ||
+          f4 < FLAME_TH || f5 < FLAME_TH);
+}
+
+void goToFlame() {
+  if (f3 < f1 && f3 < f5) {
+    forward();
+  }
+  else if (f1 < f5) {
+    turnLeft();
+  }
+  else {
+    turnRight();
+  }
+}
+
+// =====================================================
+// FAN (RELAY)
+// =====================================================
+// If your relay is ACTIVE-LOW, swap HIGH/LOW here
+void fanOn()  { digitalWrite(FAN_PIN, HIGH); }
+void fanOff() { digitalWrite(FAN_PIN, LOW);  }
 
 // =====================================================
 // SETUP
 // =====================================================
 void setup() {
   Serial.begin(9600);
+
   initMotors();
   initUltrasonic();
+
+  pinMode(FAN_PIN, OUTPUT);
+  fanOff();
+
+  Serial.println("FIRE FIGHTING ROBOT READY");
 }
 
 // =====================================================
 // LOOP
 // =====================================================
 void loop() {
+
   distL = readUltrasonicMedian(TRIG_L, ECHO_L);
   distR = readUltrasonicMedian(TRIG_R, ECHO_R);
+  readFlame();
 
-  Serial.print("US_L: ");
-  Serial.print(distL);
-  Serial.print("  US_R: ");
-  Serial.println(distR);
+  // ================= MAIN LOGIC =================
+  if (flameDetected()) {
 
-  // BOTH SIDES BLOCKED
-  if (distL < WALL_DIST && distR < WALL_DIST) {
-    stopMotors();
-    delay(50);
-    turnRight();
-    delay(600);
+    // 🔥 VERY CLOSE → STOP + FAN
+    if (distL < FLAME_NEAR_DIST || distR < FLAME_NEAR_DIST) {
+      stopMotors();
+      fanOn();
+      delay(2000);
+      fanOff();
+    }
+
+    // 🧱 WALL SAFETY WHILE APPROACHING FLAME
+    else if (distL < WALL_DIST && distR < WALL_DIST) {
+      stopMotors();
+      delay(60);
+      turnRight();
+      delay(200);
+    }
+    else if (distL < WALL_DIST) {
+      turnRight();
+    }
+    else if (distR < WALL_DIST) {
+      turnLeft();
+    }
+
+    // 🔥 MOVE TOWARD FLAME
+    else {
+      fanOff();
+      goToFlame();
+    }
   }
-  // LEFT BLOCKED
-  else if (distL < WALL_DIST) {
-    turnRight();
-  }
-  // RIGHT BLOCKED
-  else if (distR < WALL_DIST) {
-    turnLeft();
-  }
-  // CLEAR PATH
+
+  // 🚧 NO FLAME → OBSTACLE AVOIDANCE
   else {
-    forward();
+    fanOff();
+
+    if (distL < WALL_DIST && distR < WALL_DIST) {
+      stopMotors();
+      delay(60);
+      turnRight();
+      delay(600);
+    }
+    else if (distL < WALL_DIST) {
+      turnRight();
+    }
+    else if (distR < WALL_DIST) {
+      turnLeft();
+    }
+    else {
+      forward();
+    }
   }
 
-  delay(50); // stability delay
+  delay(40);
 }
